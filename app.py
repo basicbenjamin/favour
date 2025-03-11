@@ -1,7 +1,7 @@
 from flask import Flask,jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 import os
-from werkzeug.security import generate_password_hash # Import for password hashing
+from werkzeug.security import generate_password_hash, check_password_hash # Import for password hashing
 
 app = Flask(__name__)
 
@@ -58,8 +58,59 @@ def register_user():
     username = data.get('username')
     password = data.get('password')
 
-    # --- Placeholder for validation and user creation (we'll add this in the next steps) ---
-    return jsonify({'message': 'Registration endpoint hit', 'username': username}), 201 # 201 Created
+    # --- START of Username Validation ---
+    if not username:
+        return jsonify({'message': 'Username cannot be empty'}), 400
+
+    if len(username) < 3 or len(username) > 80: # Example length constraints
+        return jsonify({'message': 'Username must be between 3 and 80 characters'}), 400
+
+    existing_user = User.query.filter_by(username=username).first() # Check if username already exists in DB
+    if existing_user:
+        return jsonify({'message': 'Username already taken'}), 409 # 409 Conflict - username already exists
+    # --- END of Username Validation ---
+
+    # --- START of Password Validation ---
+    if not password:
+        return jsonify({'message': 'Password cannot be empty'}), 400 # Already handled by initial check, but good to have explicitly
+    if len(password) < 6: # Example minimum password length
+        return jsonify({'message': 'Password must be at least 6 characters long'}), 400
+    # --- END of Password Validation ---
+
+    # --- Password Hashing ---
+    hashed_password = generate_password_hash(password, method='pbkdf2:sha256', salt_length=8) # Generate a secure password hash
+    # --- End Password Hashing ---
+
+
+    # --- Create and Save User to Database ---
+    new_user = User(username=username, password_hash=hashed_password) # Create a new User object
+    db.session.add(new_user) # Add the new user to the database session (staging area)
+    db.session.commit() # Commit the session to write the changes to the database
+    # --- End User Creation and Database Saving ---
+
+    return jsonify({'message': 'User registered successfully', 'username': username}), 201 # 201 Created - resource created successfully
+
+# --- New Login Route ---
+@app.route('/api/login', methods=['POST'])
+def login_user():
+    data = request.get_json()
+
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({'message': 'Username and password are required'}), 400
+
+    username = data.get('username')
+    password = data.get('password')
+
+    user = User.query.filter_by(username=username).first() # Retrieve user from database by username
+
+    if not user: # Check if user exists
+        return jsonify({'message': 'Invalid credentials'}), 401 # 401 Unauthorized - user not found
+
+    if check_password_hash(user.password_hash, password): # Check if provided password matches the stored hash
+        return jsonify({'message': 'Login successful', 'username': username}), 200 # 200 OK - Login successful
+    else:
+        return jsonify({'message': 'Invalid credentials'}), 401 # 401 Unauthorized - password doesn't match
+# --- End Login Route ---
 
 if __name__ == '__main__':
     app.run(debug=True)
