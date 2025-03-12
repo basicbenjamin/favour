@@ -2,15 +2,16 @@ from flask import Flask,jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 import os
 from werkzeug.security import generate_password_hash, check_password_hash # Import for password hashing
+from datetime import datetime # Import datetime for formatting dates
 
 app = Flask(__name__)
 
-# --- Database Configuration ---
-basedir = os.path.abspath(os.path.dirname(__file__)) # Get the absolute path of the current directory
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'favour.db') # SQLite database file in the same directory
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False # Disable modification tracking for performance
+# --- Database Configuration --- (keep your existing database configuration)
+basedir = os.path.abspath(os.path.dirname(__file__))
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'favour.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app) # Initialize SQLAlchemy with your Flask app
+db = SQLAlchemy(app) # Initialize SQLAlchemy *without* the app for now
 
 # --- Data Models ---
 class User(db.Model):
@@ -38,11 +39,7 @@ class FavourRequest(db.Model):
 
     def __repr__(self):
         return f'<FavourRequest {self.request_id} - {self.favour_type}>'
-    
-# --- Create Database Tables (run only once initially) ---
-#with app.app_context():
- #   db.create_all()
- #  print("Database tables created/updated!")
+
 
 @app.route('/')
 def hello_world():
@@ -111,6 +108,92 @@ def login_user():
     else:
         return jsonify({'message': 'Invalid credentials'}), 401 # 401 Unauthorized - password doesn't match
 # --- End Login Route ---
+
+# --- New Create Favour Request Route ---
+@app.route('/api/favours/request', methods=['POST'])
+def create_favour_request():
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'message': 'Request data is required'}), 400
+
+    # --- Temporarily get requester_id from request for simplicity (SECURITY RISK - to be improved later) ---
+    requester_id = data.get('requester_id') # In real app, get from session/auth token
+
+    favour_type = data.get('favour_type')
+    description = data.get('description')
+    credits_offered = data.get('credits_offered') 
+
+    
+    # --- START of Input Validation ---
+    if not favour_type:
+        return jsonify({'message': 'Favour type is required'}), 400
+    if favour_type not in ['text', 'voice', 'video']: # Check against allowed favour types
+        return jsonify({'message': 'Invalid favour type. Must be one of: text, voice, video'}), 400
+
+    if not description:
+        return jsonify({'message': 'Description is required'}), 400
+    if len(description) < 10 or len(description) > 500: # Example description length limits
+        return jsonify({'message': 'Description must be between 10 and 500 characters'}), 400
+
+    try: # Validate credits_offered is a positive integer
+        credits = int(credits_offered)
+        if credits <= 0:
+            return jsonify({'message': 'Credits offered must be a positive number'}), 400
+        credits_offered = credits # Convert to integer if valid
+    except (ValueError, TypeError):
+        return jsonify({'message': 'Credits offered must be a valid positive integer'}), 400
+    # --- END of Input Validation ---
+
+    #- START of Credit Balance Check ---
+    requester = User.query.get(requester_id) # Retrieve the User object from the database using requester_id
+    if not requester: # Check if requester with given ID exists (defensive check)
+        return jsonify({'message': 'Invalid requester ID'}), 400 # Or 404 Not Found - depends on desired behavior
+    
+
+    if requester.credit_balance < credits_offered: # Check if user has enough credits
+        return jsonify({'message': 'Insufficient credits. You need more credits to request this favour.'}), 400 # Or 402 Payment Required, but 400 is OK for now
+    # --- END of Credit Balance Check ---
+
+
+    # --- START of Favour Request Creation and Database Saving ---
+    new_favour_request = FavourRequest(
+        favour_type=favour_type,
+        description=description,
+        credits_offered=credits_offered, # Use credits_cost here (or credits_offered, whichever you prefer consistently)
+        requester_id=requester_id
+    )
+    db.session.add(new_favour_request) # Add the new favour request to the database session
+
+    requester.credit_balance -= credits_offered # Deduct credits from the requester's balance
+    # db.session.add(requester) # Not strictly needed as SQLAlchemy tracks changes to loaded objects
+                                # but can be more explicit if preferred
+
+    db.session.commit() # Commit the session to save both the new favour request and updated user balance
+    # --- END of Favour Request Creation and Database Saving ---
+
+    return jsonify({'message': 'Favour request created successfully',
+                    'request_id': new_favour_request.request_id}), 201 # 201 Created - resource created successfully
+    # --- End Create Favour Request Route ---
+
+# --- Get Open Favour Requests Route (Modified) ---
+@app.route('/api/favours/open', methods=['GET'])
+def get_open_favour_requests():
+    open_requests = FavourRequest.query.filter_by(status='open').all() # Query for open favour requests
+
+    favour_requests_list = [] # Initialize an empty list to hold serialized favour requests
+    for req in open_requests: # Iterate through each open favour request
+        favour_requests_list.append({ # Create a dictionary for each request and append to the list
+            'request_id': req.request_id,
+            'favour_type': req.favour_type,
+            'description': req.description,
+            'credits_offered': req.credits_offered,
+            'requester_username': req.requester.username, # Access requester username via relationship
+            'request_date': req.request_date.isoformat() # Format datetime to ISO string for JSON
+        })
+
+    return jsonify({'open_favour_requests': favour_requests_list}), 200 # Return list of open favour requests in JSON
+# --- End Get Open Favour Requests Route ---
 
 if __name__ == '__main__':
     app.run(debug=True)
